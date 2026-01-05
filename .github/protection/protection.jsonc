@@ -13,7 +13,7 @@
   "required_pull_request_reviews": {
     "dismiss_stale_reviews": true,          // 新 commit 発生時に古いレビューを無効化
     "require_code_owner_reviews": false,    // CODEOWNERS によるレビュー必須
-    "required_approving_review_count": 0,   // 必要な Approve の数
+    "required_approving_review_count": 1,   // 必要な Approve の数
 
     // 1 人のユーザーが複数のレビューを行ってもカウントしない（Enterprise 機能）
     "require_last_push_approval": false,
@@ -45,7 +45,7 @@
 
   // ===== 誰が push できるかの制限 =====
   "restrictions": {
-    "users": [],      // push を許可する GitHub ユーザー
+    "users": [jiangtestgm],      // push を許可する GitHub ユーザー
     "teams": [],      // push を許可する Team
     "apps": []        // push を許可する GitHub App
   }
