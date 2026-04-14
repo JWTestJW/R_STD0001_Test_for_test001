@@ -1,0 +1,80 @@
+name: Export Pull Request Details
+
+permissions:
+  contents: read
+  pull-requests: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number"
+        required: true
+        type: string
+
+jobs:
+  export-pr-details:
+    name: Export PR details as JSON
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check PR existence and export details
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+        run: |
+          # 厳格モード: エラー時は即終了
+          set -euo pipefail
+          trap 'echo "❌ Error in Check PR existence and export details step (line $LINENO). Check operations above."' ERR
+
+          # ---------------------------------------------------
+          # 1. 入力値の基本検証
+          # ---------------------------------------------------
+          if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "❌ Invalid pull request number: $PR_NUMBER"
+            exit 1
+          fi
+
+          PR_URL="https://api.github.com/repos/$OWNER/$REPO/pulls/$PR_NUMBER"
+
+          echo "Checking if pull request #$PR_NUMBER exists..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "$PR_URL")
+
+          if [ "$STATUS" == "404" ]; then
+            echo "❌ Pull request #$PR_NUMBER not found."
+            exit 1
+          elif [ "$STATUS" != "200" ]; then
+            echo "❌ Failed to check pull request existence. Status: $STATUS"
+            exit 1
+          fi
+
+          # ---------------------------------------------------
+          # 2. PR 詳細情報の取得とログ出力
+          # ---------------------------------------------------
+          echo "✅ Pull request #$PR_NUMBER exists."
+          echo "Exporting pull request details as JSON..."
+
+          HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "$PR_URL")
+
+          HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
+          BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ Pull request details fetched successfully."
+            echo "⬇️ Pull request details JSON:"
+            echo "$BODY" | jq .
+          else
+            echo "❌ Failed to fetch pull request details. Status: $HTTP_CODE"
+            echo "Body: $BODY"
+            exit 1
+          fi
