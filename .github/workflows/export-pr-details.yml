@@ -20,6 +20,7 @@ jobs:
 
     steps:
       - name: Check PR existence and export details
+        id: export-pr
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OWNER: ${{ github.repository_owner }}
@@ -177,3 +178,16 @@ jobs:
           echo "✅ Pull request aggregated JSON built successfully."
           echo "⬇️ Pull request aggregated JSON:"
           echo "$FINAL_JSON" | jq .
+
+          JSON_FILE="pr_details_${PR_NUMBER}.json"
+          echo "$FINAL_JSON" | jq . > "$JSON_FILE"
+          echo "json_file=$JSON_FILE" >> "$GITHUB_OUTPUT"
+          echo "✅ JSON file generated: $JSON_FILE"
+          echo "✅ Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Upload PR JSON artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-details-${{ github.event.inputs.pr_number }}
+          path: ${{ steps.export-pr.outputs.json_file }}
+          if-no-files-found: error
