@@ -3,6 +3,7 @@ name: Export Pull Request Details
 permissions:
   contents: read
   pull-requests: read
+  issues: read
 
 on:
   workflow_dispatch:
@@ -29,6 +30,72 @@ jobs:
           set -euo pipefail
           trap 'echo "❌ Error in Check PR existence and export details step (line $LINENO). Check operations above."' ERR
 
+          API_ROOT="https://api.github.com/repos/$OWNER/$REPO"
+
+          # ---------------------------------------------------
+          # 共通関数
+          # ---------------------------------------------------
+          fetch_single_json() {
+            local url="$1"
+            local operation="$2"
+            local response http_code body
+
+            response=$(curl -s -w "\n%{http_code}" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "$url")
+
+            http_code=$(echo "$response" | tail -n1)
+            body=$(echo "$response" | sed '$d')
+
+            if [ "$http_code" = "200" ]; then
+              echo "$body"
+            else
+              echo "❌ Failed to $operation. Status: $http_code"
+              echo "Body: $body"
+              exit 1
+            fi
+          }
+
+          fetch_paginated_array() {
+            local endpoint="$1"
+            local operation="$2"
+            local page=1
+            local all='[]'
+
+            while true; do
+              local url response http_code body count
+              url="$API_ROOT/$endpoint?per_page=100&page=$page"
+
+              response=$(curl -s -w "\n%{http_code}" \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2026-03-10" \
+                "$url")
+
+              http_code=$(echo "$response" | tail -n1)
+              body=$(echo "$response" | sed '$d')
+
+              if [ "$http_code" != "200" ]; then
+                echo "❌ Failed to $operation. Status: $http_code"
+                echo "Body: $body"
+                exit 1
+              fi
+
+              count=$(echo "$body" | jq 'length')
+              all=$(echo "$all" | jq -c --argjson chunk "$body" '. + $chunk')
+
+              if [ "$count" -lt 100 ]; then
+                break
+              fi
+
+              page=$((page + 1))
+            done
+
+            echo "$all"
+          }
+
           # ---------------------------------------------------
           # 1. 入力値の基本検証
           # ---------------------------------------------------
@@ -37,7 +104,7 @@ jobs:
             exit 1
           fi
 
-          PR_URL="https://api.github.com/repos/$OWNER/$REPO/pulls/$PR_NUMBER"
+          PR_URL="$API_ROOT/pulls/$PR_NUMBER"
 
           echo "Checking if pull request #$PR_NUMBER exists..."
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -55,26 +122,58 @@ jobs:
           fi
 
           # ---------------------------------------------------
-          # 2. PR 詳細情報の取得とログ出力
+          # 2. PR 関連データの取得
           # ---------------------------------------------------
           echo "✅ Pull request #$PR_NUMBER exists."
-          echo "Exporting pull request details as JSON..."
+          echo "Collecting pull request details and related resources..."
 
-          HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            "$PR_URL")
+          PR_JSON=$(fetch_single_json "$PR_URL" "fetch pull request details")
+          REVIEWS_JSON=$(fetch_paginated_array "pulls/$PR_NUMBER/reviews" "fetch pull request reviews")
+          ISSUE_COMMENTS_JSON=$(fetch_paginated_array "issues/$PR_NUMBER/comments" "fetch issue comments")
+          REVIEW_COMMENTS_JSON=$(fetch_paginated_array "pulls/$PR_NUMBER/comments" "fetch review comments")
+          COMMITS_JSON=$(fetch_paginated_array "pulls/$PR_NUMBER/commits" "fetch pull request commits")
+          FILES_JSON=$(fetch_paginated_array "pulls/$PR_NUMBER/files" "fetch changed files")
+          ISSUE_EVENTS_JSON=$(fetch_paginated_array "issues/$PR_NUMBER/events" "fetch issue events")
 
-          HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
-          BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
+          # ---------------------------------------------------
+          # 3. 総合 JSON の組み立てとログ出力
+          # ---------------------------------------------------
+          FINAL_JSON=$(jq -n \
+            --arg exported_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg owner "$OWNER" \
+            --arg repo "$REPO" \
+            --arg pr_number "$PR_NUMBER" \
+            --argjson pr "$PR_JSON" \
+            --argjson reviews "$REVIEWS_JSON" \
+            --argjson issue_comments "$ISSUE_COMMENTS_JSON" \
+            --argjson review_comments "$REVIEW_COMMENTS_JSON" \
+            --argjson commits "$COMMITS_JSON" \
+            --argjson files "$FILES_JSON" \
+            --argjson issue_events "$ISSUE_EVENTS_JSON" \
+            '{
+              exported_at: $exported_at,
+              repository: {
+                owner: $owner,
+                name: $repo
+              },
+              pull_request_number: ($pr_number | tonumber),
+              pull_request: $pr,
+              reviews: $reviews,
+              issue_comments: $issue_comments,
+              review_comments: $review_comments,
+              commits: $commits,
+              files: $files,
+              issue_events: $issue_events,
+              summary: {
+                reviews_count: ($reviews | length),
+                issue_comments_count: ($issue_comments | length),
+                review_comments_count: ($review_comments | length),
+                commits_count: ($commits | length),
+                files_count: ($files | length),
+                issue_events_count: ($issue_events | length)
+              }
+            }')
 
-          if [ "$HTTP_CODE" = "200" ]; then
-            echo "✅ Pull request details fetched successfully."
-            echo "⬇️ Pull request details JSON:"
-            echo "$BODY" | jq .
-          else
-            echo "❌ Failed to fetch pull request details. Status: $HTTP_CODE"
-            echo "Body: $BODY"
-            exit 1
-          fi
+          echo "✅ Pull request aggregated JSON built successfully."
+          echo "⬇️ Pull request aggregated JSON:"
+          echo "$FINAL_JSON" | jq .
